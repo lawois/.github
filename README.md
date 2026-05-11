@@ -27,6 +27,7 @@ jobs:
       contents: read
       security-events: write
       actions: read
+      pull-requests: read
     with:
       enable_codeql: false        # true for public repos
       codeql_languages: '[]'      # e.g. '["go","python","javascript-typescript"]'

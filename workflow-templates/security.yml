@@ -12,6 +12,7 @@ jobs:
       contents: read
       security-events: write
       actions: read
+      pull-requests: read
     with:
       enable_codeql: false
       codeql_languages: '[]'
