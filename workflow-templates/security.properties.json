@@ -1,0 +1,7 @@
+{
+  "name": "Security baseline",
+  "description": "Secret scanning (gitleaks, trufflehog), SAST (semgrep), vuln/IaC scan (trivy), workflow lint (actionlint), optional CodeQL. Calls lawois/.github reusable workflow.",
+  "iconName": "shield-check",
+  "categories": ["security", "code-scanning"],
+  "filePatterns": [".*"]
+}

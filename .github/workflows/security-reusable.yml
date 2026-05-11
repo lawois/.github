@@ -1,0 +1,122 @@
+name: Security baseline (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      enable_codeql:
+        description: "Run CodeQL. Free for public repos; requires GitHub Advanced Security for private repos."
+        type: boolean
+        default: false
+      codeql_languages:
+        description: 'JSON array of CodeQL languages, e.g. ["go","javascript-typescript"]. Only used when enable_codeql=true.'
+        type: string
+        default: '[]'
+      severity:
+        description: "Trivy severity filter."
+        type: string
+        default: "HIGH,CRITICAL"
+      semgrep_config:
+        description: "Semgrep ruleset (space-separated)."
+        type: string
+        default: "p/default p/security-audit p/secrets"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  gitleaks:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  trufflehog:
+    name: Verified secrets (trufflehog)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: TruffleHog
+        uses: trufflesecurity/trufflehog@v3.83.7
+        with:
+          extra_args: --only-verified
+
+  semgrep:
+    name: SAST (semgrep)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run semgrep
+        run: |
+          semgrep scan \
+            --config "${SEMGREP_CONFIG}" \
+            --sarif --output=semgrep.sarif \
+            --error || true
+        env:
+          SEMGREP_CONFIG: ${{ inputs.semgrep_config }}
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  trivy:
+    name: Vulns / IaC (trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          format: sarif
+          output: trivy.sarif
+          severity: ${{ inputs.severity }}
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
+
+  actionlint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  codeql:
+    name: CodeQL
+    if: ${{ inputs.enable_codeql && inputs.codeql_languages != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.codeql_languages) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

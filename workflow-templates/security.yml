@@ -1,0 +1,17 @@
+name: Security
+on:
+  pull_request:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  security:
+    uses: lawois/.github/.github/workflows/security-reusable.yml@main
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    with:
+      enable_codeql: false
+      codeql_languages: '[]'
