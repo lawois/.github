@@ -4,7 +4,7 @@ Default community files and **reusable workflows** for every repo under `lawois`
 
 ## What's here
 
-- `.github/workflows/security-reusable.yml` — reusable workflow that runs gitleaks, trufflehog, semgrep, trivy, actionlint, and (optionally) CodeQL. Callable from any repo.
+- `.github/workflows/security-reusable.yml` — reusable workflow that runs gitleaks, trufflehog, semgrep, trivy, actionlint, and (optionally) CodeQL. Callable from any repo. SARIF outputs are uploaded as workflow artifacts always, and additionally to the Security tab when `private_repo: false` (public repos or private repos with GHAS).
 - `workflow-templates/security.yml` — surfaces a "Security baseline" entry in the **Actions → New workflow** picker for every repo.
 - `examples/dependabot.yml` — copy into each repo at `.github/dependabot.yml`.
 
@@ -29,6 +29,7 @@ jobs:
       actions: read
       pull-requests: read
     with:
+      private_repo: true          # false for public repos (enables SARIF → Security tab)
       enable_codeql: false        # true for public repos
       codeql_languages: '[]'      # e.g. '["go","python","javascript-typescript"]'
 ```

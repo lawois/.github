@@ -14,5 +14,9 @@ jobs:
       actions: read
       pull-requests: read
     with:
+      # Private repos: keep private_repo: true (default). SARIF lands as artifact only.
+      # Public repos: set private_repo: false to upload SARIF to the Security tab,
+      # and optionally set enable_codeql: true with codeql_languages.
+      private_repo: true
       enable_codeql: false
       codeql_languages: '[]'

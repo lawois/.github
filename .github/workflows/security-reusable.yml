@@ -3,8 +3,12 @@ name: Security baseline (reusable)
 on:
   workflow_call:
     inputs:
+      private_repo:
+        description: "Set true for private repos without GHAS. Skips SARIF upload to Code Scanning (which requires GHAS), keeps SARIF as a downloadable artifact instead."
+        type: boolean
+        default: true
       enable_codeql:
-        description: "Run CodeQL. Free for public repos; requires GitHub Advanced Security for private repos."
+        description: "Run CodeQL. Free for public repos; requires GHAS for private repos."
         type: boolean
         default: false
       codeql_languages:
@@ -68,8 +72,16 @@ jobs:
             --error || true
         env:
           SEMGREP_CONFIG: ${{ inputs.semgrep_config }}
-      - uses: github/codeql-action/upload-sarif@v3
+      - name: Upload SARIF as artifact
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          if-no-files-found: ignore
+      - name: Upload SARIF to Code Scanning
+        if: ${{ always() && !inputs.private_repo }}
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -87,8 +99,16 @@ jobs:
           output: trivy.sarif
           severity: ${{ inputs.severity }}
           ignore-unfixed: true
-      - uses: github/codeql-action/upload-sarif@v3
+      - name: Upload SARIF as artifact
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif
+          path: trivy.sarif
+          if-no-files-found: ignore
+      - name: Upload SARIF to Code Scanning
+        if: ${{ always() && !inputs.private_repo }}
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy.sarif
           category: trivy
