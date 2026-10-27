@@ -20,9 +20,17 @@ on:
         type: string
         default: "HIGH,CRITICAL"
       semgrep_config:
-        description: "Semgrep ruleset (space-separated)."
+        description: "Semgrep ruleset (space-separated). Only used by the full scan."
         type: string
         default: "p/default p/security-audit p/secrets"
+      runner:
+        description: 'runs-on of the quick job, as JSON: "ubuntu-latest" (default) or e.g. ["self-hosted","linux","proxmox"] for a repository that has its own runners (no GitHub minutes).'
+        type: string
+        default: '"ubuntu-latest"'
+      full_scan:
+        description: "Run the five full jobs (gitleaks, trufflehog, semgrep, trivy, actionlint) on every event, as before. Default false: pull requests and pushes run only the quick job, and the weekly full scan of every repository runs on the home lab (see README)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,8 +39,77 @@ permissions:
   pull-requests: read
 
 jobs:
+  # Pull requests and pushes: only what can block, on the new commits only, in one job (every job
+  # is billed at least one minute). semgrep and trivy never failed a run (their step ends with
+  # `|| true` / no exit code): their reports are produced by the weekly full scan instead.
+  # schedule: nothing runs here, the home lab scans all repositories each week.
+  quick:
+    name: Secrets and workflows (quick)
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && !inputs.full_scan }}
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tools (pinned versions, SHA-256 checked)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          get() { curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "$1" "$2"; echo "$3  $1" | sha256sum -c -; }
+          get gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          tar xzf gitleaks.tgz -C bin gitleaks
+          get trufflehog.tgz https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.7/trufflehog_3.99.7_linux_amd64.tar.gz bdbea0508e439b144f49de14e775908de5f902f3d14ea7ae8354bae72b0b72ef
+          tar xzf trufflehog.tgz -C bin trufflehog
+          get actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          tar xzf actionlint.tgz -C bin actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: The new commits
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          since=""; tip=""
+          if [ "$EVENT" = pull_request ]; then
+            since="$BASE"; tip="$HEAD"
+          elif [ -n "$BEFORE" ] && [ "${BEFORE//0/}" != "" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            since="$BEFORE"; tip="$AFTER"
+          fi
+          # no usable range (first push, forced push): the whole history, as the old job did
+          echo "since=$since" >> "$GITHUB_OUTPUT"
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+          echo "range: ${since:-whole history}..${tip}"
+      - name: Secrets in the new commits (gitleaks)
+        env:
+          SINCE: ${{ steps.range.outputs.since }}
+          TIP: ${{ steps.range.outputs.tip }}
+        run: |
+          set -euo pipefail
+          gitleaks git --no-banner --no-color --redact --verbose --exit-code 1 ${SINCE:+--log-opts="$SINCE..$TIP"} .
+      - name: Live secrets in the new commits (trufflehog, verified only)
+        env:
+          SINCE: ${{ steps.range.outputs.since }}
+          TIP: ${{ steps.range.outputs.tip }}
+        run: |
+          set -euo pipefail
+          trufflehog git "file://$PWD" ${SINCE:+--since-commit "$SINCE" --branch "$TIP"} --only-verified --fail --no-update --no-color
+      - name: Workflow lint (actionlint)
+        run: |
+          if [ -d .github/workflows ]; then actionlint -no-color; else echo "no workflows"; fi
+
   gitleaks:
     name: Secrets (gitleaks)
+    if: ${{ github.event_name != 'schedule' && (github.event_name == 'workflow_dispatch' || inputs.full_scan) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,6 +124,7 @@ jobs:
 
   trufflehog:
     name: Verified secrets (trufflehog)
+    if: ${{ github.event_name != 'schedule' && (github.event_name == 'workflow_dispatch' || inputs.full_scan) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +137,7 @@ jobs:
 
   semgrep:
     name: SAST (semgrep)
+    if: ${{ github.event_name != 'schedule' && (github.event_name == 'workflow_dispatch' || inputs.full_scan) }}
     runs-on: ubuntu-latest
     container:
       image: semgrep/semgrep
@@ -88,6 +167,7 @@ jobs:
 
   trivy:
     name: Vulns / IaC (trivy)
+    if: ${{ github.event_name != 'schedule' && (github.event_name == 'workflow_dispatch' || inputs.full_scan) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,17 +195,21 @@ jobs:
 
   actionlint:
     name: Workflow lint (actionlint)
+    if: ${{ github.event_name != 'schedule' && (github.event_name == 'workflow_dispatch' || inputs.full_scan) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run actionlint
+      - name: Run actionlint (pinned, SHA-256 checked)
         run: |
-          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
+          tar xzf actionlint.tgz actionlint
           ./actionlint -color
 
   codeql:
     name: CodeQL
-    if: ${{ inputs.enable_codeql && inputs.codeql_languages != '[]' }}
+    if: ${{ github.event_name != 'schedule' && inputs.enable_codeql && inputs.codeql_languages != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       security-events: write
